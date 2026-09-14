@@ -3,6 +3,7 @@ export * as MoveSession from "./move-session"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
 import { EventV2 } from "../event"
+import { FSUtil } from "../fs-util"
 import { Git } from "../git"
 import { Location } from "../location"
 import { ProjectV2 } from "../project"
@@ -33,6 +34,19 @@ export class DestinationProjectMismatchError extends Schema.TaggedErrorClass<Des
   },
 ) {}
 
+/**
+ * The destination is not usable as a workspace. `missing` also covers a path the
+ * server cannot stat, because `FSUtil.existsSafe` reports unreadable paths as
+ * absent rather than surfacing the underlying errno.
+ */
+export class InvalidDestinationError extends Schema.TaggedErrorClass<InvalidDestinationError>()(
+  "MoveSession.InvalidDestinationError",
+  {
+    directory: AbsolutePath,
+    reason: Schema.Literals(["missing", "not_directory", "not_git"]),
+  },
+) {}
+
 export class ApplyChangesError extends Schema.TaggedErrorClass<ApplyChangesError>()("MoveSession.ApplyChangesError", {
   message: Schema.String,
 }) {}
@@ -56,6 +70,7 @@ export class ResetSourceChangesError extends Schema.TaggedErrorClass<ResetSource
 export type Error =
   | SessionV2.NotFoundError
   | DestinationProjectMismatchError
+  | InvalidDestinationError
   | CaptureChangesError
   | ApplyChangesError
   | ResetSourceChangesError
@@ -71,14 +86,34 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const git = yield* Git.Service
     const events = yield* EventV2.Service
+    const fs = yield* FSUtil.Service
     const project = yield* ProjectV2.Service
     const sessions = yield* SessionStore.Service
 
     const moveSession = Effect.fn("MoveSession.moveSession")(function* (input: Input) {
       const current = yield* sessions.get(input.sessionID)
       if (!current) return yield* new SessionV2.NotFoundError({ sessionID: input.sessionID })
-      const directory = AbsolutePath.make(input.destination.directory)
+      const requested = AbsolutePath.make(input.destination.directory)
+      if (current.location.directory === requested) return
+
+      // Validate the destination before touching either side. Everything below
+      // this point mutates the source or destination working tree, so a bad
+      // destination must fail here to leave the current workspace intact.
+      if (!(yield* fs.existsSafe(requested)))
+        return yield* new InvalidDestinationError({ directory: requested, reason: "missing" })
+      if (!(yield* fs.isDir(requested)))
+        return yield* new InvalidDestinationError({ directory: requested, reason: "not_directory" })
+
+      // Canonicalize before anything derives from this path. `Project.resolve`
+      // reports the realpath (`git rev-parse --show-toplevel`), so a symlinked
+      // destination — `/var` on macOS, or any symlinked checkout — would other-
+      // wise store a path that disagrees with the project root and produce a
+      // `../../..` subdirectory instead of a project-relative one.
+      const directory = AbsolutePath.make(yield* fs.realPath(requested).pipe(Effect.orElseSucceed(() => requested)))
       if (current.location.directory === directory) return
+
+      const destinationRepository = yield* git.repo.discover(directory)
+      if (!destinationRepository) return yield* new InvalidDestinationError({ directory: requested, reason: "not_git" })
 
       const source = yield* project.resolve(current.location.directory)
       const destination = yield* project.resolve(directory)
@@ -96,10 +131,8 @@ const layer = Layer.effect(
             .pipe(Effect.mapError((error) => new CaptureChangesError({ message: error.message })))
         : Git.ChangeSet.make("")
       if (patch) {
-        const repository = yield* git.repo.discover(directory)
-        if (!repository) return yield* new ApplyChangesError({ message: "Destination is not a Git repository" })
         yield* git.change
-          .apply({ repository, path: directory, changes: patch })
+          .apply({ repository: destinationRepository, path: directory, changes: patch })
           .pipe(Effect.mapError((error) => new ApplyChangesError({ message: error.message })))
       }
 
@@ -144,5 +177,5 @@ const layer = Layer.effect(
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [Git.node, EventV2.node, ProjectV2.node, SessionStore.node],
+  deps: [FSUtil.node, Git.node, EventV2.node, ProjectV2.node, SessionStore.node],
 })

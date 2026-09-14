@@ -16,6 +16,7 @@ import { PermissionV2 } from "../../permission"
 import type { LocationMutation } from "../../location-mutation"
 import type { ReadTool } from "../../tool/read"
 import type { EditTool } from "../../tool/edit"
+import type { WorkspaceTool } from "../../tool/workspace"
 
 const legacySources = [
   { pattern: "{agent,agents}/**/*.md", primary: false },
@@ -28,7 +29,10 @@ type PathAction =
   | LocationMutation.ExternalDirectoryAuthorization["action"]
   | typeof ReadTool.name
   | typeof EditTool.name
-const pathActions = ["external_directory", "read", "edit"] as const satisfies readonly PathAction[]
+  | typeof WorkspaceTool.name
+// `workspace` resources are absolute destination directories, so they need the
+// same `~` expansion as the other path-valued actions.
+const pathActions = ["external_directory", "read", "edit", "workspace"] as const satisfies readonly PathAction[]
 const agentKeys = new Set([
   "model",
   "variant",

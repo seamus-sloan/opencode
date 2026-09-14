@@ -14,6 +14,7 @@ import type {
 import type { FileDiffInfo } from "@opencode-ai/client/promise"
 import { batch } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
+import { sessionMovedData } from "@/utils/session-moved"
 import { message as cleanMessage } from "@/utils/diffs"
 import { sessionNotFoundError } from "@/utils/server-errors"
 import { rootSession } from "@/utils/session-route"
@@ -945,15 +946,6 @@ export function createServerSession(
     const info = data.info[sessionID]
     if (event.type === "session.renamed" && info)
       remember({ ...info, title: event.data.title, time: { ...info.time, updated: event.created } })
-    if (event.type === "session.moved" && info)
-      remember({
-        ...info,
-        projectID: event.data.projectID ?? info.projectID,
-        workspaceID: event.data.location.workspaceID,
-        directory: event.data.location.directory,
-        path: event.data.subpath,
-        time: { ...info.time, updated: event.created },
-      })
     if (event.type === "session.usage.updated" && info)
       remember({ ...info, cost: event.data.cost, tokens: event.data.tokens })
     // if (event.type === "session.archived") {
@@ -999,6 +991,25 @@ export function createServerSession(
       case "session.created":
         remember((event.properties as { info: Session }).info)
         return
+      // Both protocol generations land here; see `utils/session-moved.ts`. The
+      // session's directory is what the file browser, git status watcher, and
+      // changed-files query are keyed on, so this is what makes the UI follow a
+      // workspace switch.
+      case "session.moved":
+      case "session.next.moved": {
+        const moved = sessionMovedData(event.properties)
+        const current = moved && data.info[moved.sessionID]
+        if (!moved || !current) return
+        remember({
+          ...current,
+          projectID: moved.projectID ?? current.projectID,
+          workspaceID: moved.workspaceID,
+          directory: moved.directory,
+          path: moved.subpath,
+          time: { ...current.time, updated: Date.now() },
+        })
+        return
+      }
       case "session.updated": {
         const info = (event.properties as { info: Session }).info
         remember(info)

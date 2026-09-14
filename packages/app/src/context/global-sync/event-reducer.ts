@@ -12,6 +12,7 @@ import type {
 } from "@opencode-ai/sdk/v2/client"
 import type { FileDiffInfo } from "@opencode-ai/client/promise"
 import type { State, VcsCache } from "./types"
+import { sessionMovedData } from "@/utils/session-moved"
 import { trimSessions } from "./session-trim"
 import { dropSessionCaches } from "./session-cache"
 import { diffs as list, message as clean } from "@/utils/diffs"
@@ -225,21 +226,19 @@ export function applyDirectoryEvent(input: {
     //   if (!info?.parentID) input.setStore("sessionTotal", (value) => Math.max(0, value - 1))
     //   break
     // }
-    case "session.moved": {
-      const properties = event.properties as {
-        sessionID: string
-        location: { directory: string; workspaceID?: string }
-        projectID?: string
-        subpath?: string
-      }
+    // Both protocol generations land here; see `utils/session-moved.ts`.
+    case "session.moved":
+    case "session.next.moved": {
+      const properties = sessionMovedData(event.properties)
+      if (!properties) break
       const result = Binary.search(input.store.session, properties.sessionID, (session) => session.id)
       if (!result.found) break
-      if (properties.location.directory === input.directory) {
+      if (properties.directory === input.directory) {
         input.setStore("session", result.index, (session) => ({
           ...session,
           projectID: properties.projectID ?? session.projectID,
-          workspaceID: properties.location.workspaceID,
-          directory: properties.location.directory,
+          workspaceID: properties.workspaceID,
+          directory: properties.directory,
           path: properties.subpath,
           time: { ...session.time, updated: Date.now() },
         }))

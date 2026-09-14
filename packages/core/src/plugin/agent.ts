@@ -111,6 +111,9 @@ export const Plugin = define({
       { action: "question", resource: "*", effect: "deny" },
       { action: "plan_enter", resource: "*", effect: "deny" },
       { action: "plan_exit", resource: "*", effect: "deny" },
+      // Repoints the whole session, so confirm by default even though the
+      // blanket rule above allows unlisted actions.
+      { action: "workspace", resource: "*", effect: "ask" },
       { action: "read", resource: "*", effect: "allow" },
       { action: "read", resource: "*.env", effect: "ask" },
       { action: "read", resource: "*.env.*", effect: "ask" },

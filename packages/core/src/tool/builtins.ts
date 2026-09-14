@@ -13,6 +13,7 @@ import { SkillTool } from "./skill"
 import { TodoWriteTool } from "./todowrite"
 import { WebFetchTool } from "./webfetch"
 import { WebSearchTool } from "./websearch"
+import { WorkspaceTool } from "./workspace"
 import { WriteTool } from "./write"
 
 /**
@@ -43,6 +44,7 @@ export const node = makeLocationNode({
     TodoWriteTool.node,
     WebFetchTool.node,
     WebSearchTool.node,
+    WorkspaceTool.node,
     WriteTool.node,
   ],
 })

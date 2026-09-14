@@ -13,7 +13,10 @@ export interface MockServerConfig {
   project: unknown
   sessions: ({ id: string } & Record<string, unknown>)[]
   pageMessages: (sessionId: string, limit: number, before?: string) => { items: unknown[]; cursor?: string }
-  vcsDiff?: unknown[]
+  /** A single set, or one per workspace directory for workspace-switch tests. */
+  vcsDiff?: unknown[] | ((directory: string) => unknown[])
+  /** Extra directories that behave as workspaces of the same project. */
+  workspaces?: string[]
   messageDelay?: number
   beforeMessagesResponse?: (input: { sessionID: string; before?: string }) => Promise<void>
   onMessages?: (input: { sessionID: string; before?: string; phase: "start" | "end" }) => void
@@ -57,6 +60,16 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
     if (url.port !== targetPort && url.port !== appPort) return route.fallback()
 
     const path = url.pathname
+    // Requests carry the workspace they target; echo it back so a session that
+    // moves between workspaces sees that workspace's data.
+    const requested =
+      url.searchParams.get("location[directory]") ??
+      url.searchParams.get("directory") ??
+      route.request().headers()["x-opencode-directory"]
+    const directoryOf = [config.directory, ...(config.workspaces ?? [])].includes(requested ?? "")
+      ? requested!
+      : config.directory
+    const diffsOf = typeof config.vcsDiff === "function" ? config.vcsDiff(directoryOf) : config.vcsDiff
     if (path === "/global/event" || path === "/event" || path === "/api/event") {
       const events = config.events?.()
       return sse(
@@ -98,7 +111,7 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
         route,
         typeof config.sessionStatus === "function" ? config.sessionStatus() : (config.sessionStatus ?? {}),
       )
-    if (path === "/vcs/diff" && config.vcsDiff) return json(route, config.vcsDiff)
+    if (path === "/vcs/diff" && config.vcsDiff) return json(route, diffsOf ?? [])
     if (path === "/file" && config.fileList)
       return json(route, await config.fileList(url.searchParams.get("path") ?? ""))
     if (path === "/file/content" && config.fileContent)
@@ -122,7 +135,7 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
       })
     if (path === "/api/agent")
       return json(route, {
-        location: location(config),
+        location: location(config, directoryOf),
         data: [
           {
             id: "build",
@@ -134,14 +147,14 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
           },
         ],
       })
-    if (path === "/api/command") return json(route, { location: location(config), data: [] })
-    if (path === "/api/mcp") return json(route, { location: location(config), data: [] })
+    if (path === "/api/command") return json(route, { location: location(config, directoryOf), data: [] })
+    if (path === "/api/mcp") return json(route, { location: location(config, directoryOf), data: [] })
     if (path === "/api/mcp/resource")
-      return json(route, { location: location(config), data: { resources: [], templates: [] } })
+      return json(route, { location: location(config, directoryOf), data: { resources: [], templates: [] } })
     const integration = path.match(/^\/api\/integration\/([^/]+)$/)?.[1]
     if (integration && route.request().method() === "GET")
       return json(route, {
-        location: location(config),
+        location: location(config, directoryOf),
         data: { id: integration, name: integration, methods: [{ type: "key", label: "API key" }], connections: [] },
       })
     const integrationConnect = path.match(/^\/api\/integration\/([^/]+)\/connect\/key$/)?.[1]
@@ -151,35 +164,35 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
     }
     if (path === "/api/project") return json(route, [config.project])
     if (path === "/api/project/current")
-      return json(route, { id: (config.project as { id?: string }).id, directory: config.directory })
+      return json(route, { id: (config.project as { id?: string }).id, directory: directoryOf })
     if (path.startsWith("/api/project/") && route.request().method() === "PATCH") return json(route, config.project)
     if (path === "/api/path")
       return json(route, {
-        state: config.directory,
-        config: config.directory,
-        worktree: config.directory,
-        directory: config.directory,
+        state: directoryOf,
+        config: directoryOf,
+        worktree: directoryOf,
+        directory: directoryOf,
         home: "C:/OpenCode",
       })
     if (path === "/api/permission/request")
       return json(route, {
-        location: location(config),
+        location: location(config, directoryOf),
         data: (typeof config.permissions === "function" ? config.permissions() : (config.permissions ?? [])).map(
           currentPermission,
         ),
       })
     if (path === "/api/question/request")
       return json(route, {
-        location: location(config),
+        location: location(config, directoryOf),
         data: typeof config.questions === "function" ? config.questions() : (config.questions ?? []),
       })
     if (path === "/api/vcs")
-      return json(route, { location: location(config), data: { branch: "main", defaultBranch: "main" } })
-    if (path === "/api/vcs/status") return json(route, { location: location(config), data: [] })
-    if (path === "/api/vcs/diff") return json(route, { location: location(config), data: config.vcsDiff ?? [] })
-    if (path === "/api/pty/shells") return json(route, { location: location(config), data: [] })
+      return json(route, { location: location(config, directoryOf), data: { branch: "main", defaultBranch: "main" } })
+    if (path === "/api/vcs/status") return json(route, { location: location(config, directoryOf), data: [] })
+    if (path === "/api/vcs/diff") return json(route, { location: location(config, directoryOf), data: diffsOf ?? [] })
+    if (path === "/api/pty/shells") return json(route, { location: location(config, directoryOf), data: [] })
     if (/^\/api\/pty\/[^/]+\/connect-token$/.test(path))
-      return json(route, { location: location(config), data: { ticket: "e2e-ticket", expires_in: 60 } })
+      return json(route, { location: location(config, directoryOf), data: { ticket: "e2e-ticket", expires_in: 60 } })
     if (emptyObject.has(path)) return json(route, {})
     if (emptyList.has(path)) return json(route, [])
     if (path === "/api/session") {
@@ -314,10 +327,10 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
   })
 }
 
-function location(config: MockServerConfig) {
+function location(config: MockServerConfig, directory: string) {
   return {
-    directory: config.directory,
-    project: { id: (config.project as { id?: string }).id, directory: config.directory },
+    directory,
+    project: { id: (config.project as { id?: string }).id, directory },
   }
 }
 

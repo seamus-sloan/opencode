@@ -161,6 +161,7 @@ OpenCode permissions are keyed by tool name, plus a couple of safety guards:
 - `webfetch` — fetching a URL (matches the URL)
 - `websearch` — web search (matches the query)
 - `external_directory` — triggered when a tool touches paths outside the project working directory
+- `workspace` — changing the session's active workspace directory (matches the destination path)
 - `doom_loop` — triggered when the same tool call repeats 3 times with identical input
 
 ---
@@ -170,7 +171,7 @@ OpenCode permissions are keyed by tool name, plus a couple of safety guards:
 If you don’t specify anything, OpenCode starts from permissive defaults:
 
 - Most permissions default to `"allow"`.
-- `doom_loop` and `external_directory` default to `"ask"`.
+- `doom_loop`, `external_directory`, and `workspace` default to `"ask"`.
 - `read` is `"allow"`, but `.env` files are denied by default:
 
 ```json title="opencode.json"
