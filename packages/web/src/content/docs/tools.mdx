@@ -312,6 +312,64 @@ Each question includes a header, the question text, and a list of options. Users
 
 ---
 
+### workspace
+
+Switch the active workspace directory for the current session.
+
+```json title="opencode.json" {4}
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "workspace": "ask"
+  }
+}
+```
+
+A session is bound to one directory. That directory is what relative paths resolve against, what the file browser lists, and what the **Files Changed** panel diffs. A shell `cd` cannot change it, because every `bash` call runs in its own process and the directory change is discarded when that process exits.
+
+This tool makes the change explicitly. It is most useful with [git worktrees](https://git-scm.com/docs/git-worktree): start a session in the repository root, let the agent create or select a worktree, then have the session follow it.
+
+```bash
+# The agent creates the worktree with whatever tooling you use
+git worktree add ../feature-login -b feature-login
+```
+
+The agent then calls `workspace` with `../feature-login`, and the session rebinds:
+
+- Relative paths for `read`, `edit`, `write`, `glob`, `grep`, and `bash` resolve against the worktree.
+- The file browser lists the worktree.
+- Git status and the file watcher follow the worktree, so **Files Changed** shows the worktree's changes and no longer shows the root's.
+- The conversation, its history, and the session ID are unchanged.
+
+Inputs:
+
+- `directory` — absolute, or relative to the current workspace.
+- `moveChanges` — optional, defaults to `false`. When `true`, uncommitted changes are transferred from the current workspace to the destination and the current workspace is reset. Leave it `false` to leave both working trees untouched.
+
+The destination must be an existing directory that is a Git checkout of the **same repository** as the current workspace. Switching to an unrelated repository is rejected, as is a path that does not exist, is not a directory, or is not a Git checkout. A rejected switch leaves the session and both working trees exactly as they were.
+
+Switching back is the same call in reverse, with the original directory.
+
+:::note
+This permission defaults to `"ask"`, so you are prompted before a session changes workspace. Set it to `"allow"` if you want the agent to follow worktrees without confirmation, or `"deny"` to disable workspace switching entirely.
+:::
+
+The permission resource is the destination path, so you can scope it:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "workspace": {
+      "*": "deny",
+      "~/worktrees/**": "allow"
+    }
+  }
+}
+```
+
+---
+
 ## Custom tools
 
 Custom tools let you define your own functions that the LLM can call. These are defined in your config file and can execute arbitrary code.

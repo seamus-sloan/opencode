@@ -208,6 +208,111 @@ describe("applyDirectoryEvent", () => {
     expect(store.sessionTotal).toBe(2)
   })
 
+  // The server publishes `session.next.moved`; the reducer keys on that exact
+  // type, so a rename on either side silently strands the UI in the old
+  // workspace (the changed-files query is keyed on the session directory).
+  test("follows session.next.moved into the same directory store", () => {
+    const [store, setStore] = createStore(
+      baseState({
+        session: [{ ...rootSession({ id: "ses_1" }), directory: "/tmp" } as Session],
+        sessionTotal: 1,
+      }),
+    )
+
+    applyDirectoryEvent({
+      event: {
+        type: "session.next.moved",
+        properties: {
+          sessionID: "ses_1",
+          location: { directory: "/tmp" },
+          subdirectory: "packages/core",
+        },
+      },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.session[0]!.directory).toBe("/tmp")
+    expect(store.session[0]!.path).toBe("packages/core")
+    expect(store.sessionTotal).toBe(1)
+  })
+
+  test("drops a session that moved out of this directory store", () => {
+    const [store, setStore] = createStore(
+      baseState({
+        session: [{ ...rootSession({ id: "ses_1" }), directory: "/tmp" } as Session],
+        sessionTotal: 1,
+      }),
+    )
+
+    applyDirectoryEvent({
+      event: {
+        type: "session.next.moved",
+        properties: {
+          sessionID: "ses_1",
+          location: { directory: "/worktrees/feature" },
+          subdirectory: "",
+        },
+      },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.session).toHaveLength(0)
+    expect(store.sessionTotal).toBe(0)
+  })
+
+  // The released protocol names this `session.moved` with `subpath`; keep it
+  // working so the app still follows a move against a released server.
+  test("follows the released session.moved event with subpath", () => {
+    const [store, setStore] = createStore(
+      baseState({ session: [{ ...rootSession({ id: "ses_1" }), directory: "/tmp" } as Session] }),
+    )
+
+    applyDirectoryEvent({
+      event: {
+        type: "session.moved",
+        properties: {
+          sessionID: "ses_1",
+          location: { directory: "/tmp", workspaceID: "wrk_1" },
+          subpath: "packages/app",
+        },
+      },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.session[0]!.path).toBe("packages/app")
+    expect(store.session[0]!.workspaceID).toBe("wrk_1")
+  })
+
+  test("ignores a move event with an unusable payload", () => {
+    const [store, setStore] = createStore(
+      baseState({ session: [{ ...rootSession({ id: "ses_1" }), directory: "/tmp" } as Session] }),
+    )
+
+    applyDirectoryEvent({
+      event: { type: "session.next.moved", properties: { sessionID: "ses_1" } },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.session).toHaveLength(1)
+    expect(store.session[0]!.directory).toBe("/tmp")
+  })
+
   test("cleans session caches when archived", () => {
     const message = userMessage("msg_1", "ses_1")
     const [store, setStore] = createStore(

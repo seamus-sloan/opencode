@@ -6,6 +6,7 @@ import type {
   ProviderAuthResponse,
   SessionStatus,
 } from "@opencode-ai/sdk/v2/client"
+import { isSessionMovedType, sessionMovedData } from "@/utils/session-moved"
 import { showToast } from "@/utils/toast"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { type Accessor, batch, createMemo, getOwner, onCleanup, onMount, untrack } from "solid-js"
@@ -572,8 +573,13 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       return
     }
 
-    if (event.current?.type === "session.moved") {
-      const info = session.get(event.current.data.sessionID)
+    // `session.applyV2` above already remembered the new directory, so this
+    // indexes the session into the destination directory's store.
+    const movedSessionID = isSessionMovedType(event.current?.type)
+      ? sessionMovedData(event.current?.data)?.sessionID
+      : undefined
+    if (movedSessionID) {
+      const info = session.get(movedSessionID)
       if (info) indexSession(info)
     }
     if (event.current?.type === "session.forked")
@@ -586,7 +592,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     if (!existing) return
     children.mark(key)
     if (
-      event.current?.type === "session.moved" ||
+      movedSessionID !== undefined ||
       // event.current?.type === "session.archived" ||
       event.current?.type === "session.forked" ||
       eventType === "command.updated" ||

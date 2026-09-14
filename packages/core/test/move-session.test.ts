@@ -40,6 +40,9 @@ function abs(input: string) {
 
 async function initRepo(directory: string) {
   await $`git init`.cwd(directory).quiet()
+  // Ignore any hooks the developer configured globally; a commit-msg or
+  // pre-commit hook would otherwise reject this fixture's commit.
+  await $`git config core.hooksPath ${path.join(directory, ".git", "no-hooks")}`.cwd(directory).quiet()
   await $`git config core.autocrlf false`.cwd(directory).quiet()
   await $`git config core.fsmonitor false`.cwd(directory).quiet()
   await $`git config commit.gpgsign false`.cwd(directory).quiet()
@@ -230,6 +233,125 @@ describe("MoveSession", () => {
       )
       expect(yield* Effect.promise(() => fs.readFile(path.join(source, "tracked.txt"), "utf8"))).toBe("unrelated\n")
       expect(yield* Effect.promise(() => fs.readFile(path.join(source, "untracked.txt"), "utf8"))).toBe("unrelated\n")
+    }),
+  )
+  // A rejected destination must not move the Session or touch either working
+  // tree, so each guard asserts the persisted directory is still the source.
+  const guard = (
+    name: string,
+    reason: "missing" | "not_directory" | "not_git",
+    destinationFor: (source: string) => Promise<string>,
+  ) =>
+    it.live(name, () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+        )
+        yield* Effect.promise(() => initRepo(root.path))
+        const source = abs(yield* Effect.promise(() => fs.realpath(root.path)))
+        const destination = abs(yield* Effect.promise(() => destinationFor(source)))
+
+        const projectID = (yield* Project.Service.use((service) => service.resolve(source))).id
+        const sessionID = SessionV2.ID.make(`ses_move_guard_${reason}`)
+        const { db } = yield* Database.Service
+        yield* db
+          .insert(ProjectTable)
+          .values({ id: projectID, worktree: source, sandboxes: [], time_created: 1, time_updated: 1 })
+          .run()
+          .pipe(Effect.orDie)
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: sessionID,
+            project_id: projectID,
+            slug: `move-guard-${reason}`,
+            directory: source,
+            title: "move guard",
+            version: "test",
+            time_created: 1,
+            time_updated: 1,
+          })
+          .run()
+          .pipe(Effect.orDie)
+
+        const error = yield* MoveSession.Service.use((service) =>
+          service.moveSession({ sessionID, destination: { directory: destination }, moveChanges: true }),
+        ).pipe(Effect.flip)
+
+        expect(error).toBeInstanceOf(MoveSession.InvalidDestinationError)
+        expect(error).toMatchObject({ directory: destination, reason })
+        expect(
+          yield* db
+            .select({ directory: SessionTable.directory })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))
+            .get(),
+        ).toEqual({ directory: source })
+        expect(yield* Effect.promise(() => fs.readFile(path.join(source, "tracked.txt"), "utf8"))).toBe("initial\n")
+      }),
+    )
+
+  guard("rejects a destination that does not exist", "missing", async (source) => path.join(source, "does-not-exist"))
+  guard("rejects a destination that is a file", "not_directory", async (source) => path.join(source, "tracked.txt"))
+  guard("rejects a destination outside any repository", "not_git", async (source) => {
+    const directory = `${source}-plain`
+    await fs.mkdir(directory, { recursive: true })
+    return directory
+  })
+  // Regression: `/var` is a symlink to `/private/var` on macOS, and any checkout
+  // can be reached through a symlink. `Project.resolve` reports the realpath, so
+  // an uncanonicalized destination stored a path that disagreed with the project
+  // root and produced a `../../..` subdirectory instead of a project-relative one.
+  it.live("canonicalizes a symlinked destination before storing it", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(() => initRepo(root.path))
+      const source = abs(yield* Effect.promise(() => fs.realpath(root.path)))
+      const nested = path.join(source, "packages")
+      yield* Effect.promise(() => fs.mkdir(nested))
+      const link = `${root.path}-link`
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(link, { force: true })).pipe(Effect.ignore))
+      yield* Effect.promise(() => fs.symlink(nested, link, "dir"))
+
+      const projectID = (yield* Project.Service.use((service) => service.resolve(source))).id
+      const sessionID = SessionV2.ID.make("ses_move_symlink")
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: projectID, worktree: source, sandboxes: [], time_created: 1, time_updated: 1 })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: projectID,
+          slug: "move-symlink",
+          directory: source,
+          title: "move symlink",
+          version: "test",
+          time_created: 1,
+          time_updated: 1,
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      yield* MoveSession.Service.use((service) =>
+        service.moveSession({ sessionID, destination: { directory: abs(link) } }),
+      )
+
+      // Stored as the realpath, with a project-relative subdirectory.
+      expect(
+        yield* db
+          .select({ directory: SessionTable.directory, path: SessionTable.path })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get(),
+      ).toEqual({ directory: abs(nested), path: "packages" })
     }),
   )
 })
